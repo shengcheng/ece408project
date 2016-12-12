@@ -100,6 +100,36 @@ static void loadModel(float *conv1, float *conv2, float *fc1, float *fc2) {
   // Close the file
   check_success(H5Fclose(file_id));
 }
+// wdims[0] - height; wdims[1] - width; wdims[2] - c; wdims[3] - m
+// xdims[0] - n - batch size; xdims[1] - height; xdims[2] - width; xdims - c
+// ydims[0] - n - batch size; ydims[1] - height; ydims[2] - width; ydims - m;
+__global__ void conv_forward_valid_relu(float *X, float *W, float *Y, int xdim[4], int wdim[4], int ydim[4]) {
+	int filter_h = wdims[0];
+	int filter_w = wdims[1];
+	int filter_c = wdims[2];
+	int n,m,h,w,c,p,q;
+	int xoffset,woffset,yoffset;
+	n = blockIdx.x;
+	m = blockIdx.y;
+	y_h = blockIdx.z / W_grid + threadIdx.y;
+	y_w = blockIdx.z % W_grid + threadIdx.x;
+	float acc = 0;
+	for(c = 0; c < filter_c; c++)
+	for(p = 0; p < fliter_w; p++)
+	for(q = 0; q < fliter_h; q++)
+	{
+	xoffset = n * xidms[1] *xdims[2] * xdims[3] +
+	(y_h + p) * xdims[2] * xdims[3] +
+	(y_w + q) * xdims[3] + c;
+	woffset = p * filter_w * filter_c * m + 
+	q * filter_c * m +
+	c * m + m;
+	acc += X[xoffset] * W[woffset];
+	  
+}   
+	yoffset = ((n * y_h) * width + y_w) * m + m;
+	Y[offset] =(acc < 0) ? 0 : acc;
+}
 
 // From book chapter Figure 16.4
 static void conv_forward_valid(const float *X, const int xdims[4],
