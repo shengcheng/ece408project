@@ -38,10 +38,14 @@ static int conv2dims[] = {5, 5, 32, 64};
 static int fc1dims[]   = {1024, 128};
 static int fc2dims[]   = {128, 10};
 
-__global__ void conv_forward_valid_relu(float *X, float *W, float *Y, int xdims[4], int wdims[4], int ydims[4], int W_grid) {
-	int filter_h = wdims[0];
-	int filter_w = wdims[1];
-	int filter_c = wdims[2];
+__constant__ int device_wdims[4];
+__constant__ int device_xdims[4];
+__constant__ int device_adims[4];
+
+__global__ void conv_forward_valid_relu(float *X, float *W, float *Y, int W_grid) {
+	int filter_h = device_wdims[0];
+	int filter_w = device_wdims[1];
+	int filter_c = device_wdims[2];
 	int n, m, c, p, q;
 	int xoffset, woffset, yoffset;
 	n = blockIdx.x;
@@ -50,32 +54,29 @@ __global__ void conv_forward_valid_relu(float *X, float *W, float *Y, int xdims[
 	int y_w = blockIdx.z % W_grid * TILE_WIDTH + threadIdx.x;
 	float acc = 0;
 
-	printf("%f", acc);
-
 	for (c = 0; c < filter_c; c++)
 	{
 		for (p = 0; p < filter_w; p++)
 		{
 			for (q = 0; q < filter_h; q++)
 			{
-				xoffset = n * xdims[1] * xdims[2] * xdims[3] + (y_h + p) * xdims[2] * xdims[3] + (y_w + q) * xdims[3] + c;
+				xoffset = n * device_xdims[1] * device_xdims[2] * device_xdims[3] + (y_h + p) * device_xdims[2] * device_xdims[3] + (y_w + q) * device_xdims[3] + c;
 				woffset = p * filter_w * filter_c * m + q * filter_c * m + c * m + m;
 				acc += X[xoffset] * W[woffset];
 			}
 		}
 	}
-	yoffset = ((n * ydims[1] + y_h) * ydims[2] + y_w) * ydims[3] + m;
+
+	yoffset = ((n * device_adims[1] + y_h) * device_adims[2] + y_w) * device_adims[3] + m;
 	Y[yoffset] = (acc < 0) ? 0 : acc;
-	printf("%d\n", 1);
 }
 
-cudaError_t kernel_forward(float *x, float *conv1) {
+void kernel_forward(float *x, float *conv1) {
 	int adims[] = { xdims[0], (xdims[1] - conv1dims[0] + 1), (xdims[2] - conv1dims[1] + 1), conv1dims[3] };
 	float *device_a;
 	float *device_x;
 	float *device_w;
 	float *a;
-	cudaError_t cudaStatus;
 
 	int size_x = sizeof(float) * xdims[0] * xdims[1] * xdims[2] * xdims[3];
 	int size_w = sizeof(float) * conv1dims[0] * conv1dims[1] * conv1dims[2] * conv1dims[3];
@@ -85,15 +86,7 @@ cudaError_t kernel_forward(float *x, float *conv1) {
 	int h_grid = adims[1] / TILE_WIDTH;
 	int z = w_grid * h_grid;
 
-	printf("%d, %d, %d", z, adims[2], adims[1]);
-
 	a = (float *)malloc(size_a);
-
-	cudaStatus = cudaSetDevice(0);
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
-		goto Error;
-	}
 
 	cudaMalloc((void **)&device_x, size_x);
 	cudaMalloc((void **)&device_w, size_w);
@@ -102,27 +95,24 @@ cudaError_t kernel_forward(float *x, float *conv1) {
 	cudaMemcpy(device_x, x, size_x, cudaMemcpyHostToDevice);
 	cudaMemcpy(device_w, conv1, size_w, cudaMemcpyHostToDevice);
 
+	cudaMemcpyToSymbol(device_wdims, conv1dims, 4 * sizeof(int));
+	cudaMemcpyToSymbol(device_xdims, xdims, 4 * sizeof(int));
+	cudaMemcpyToSymbol(device_adims, adims, 4 * sizeof(int));
+
 	dim3 blockDim(TILE_WIDTH, TILE_WIDTH, 1);
 	dim3 gridDim(adims[0], adims[3], z);
 
-	conv_forward_valid_relu<<<gridDim, blockDim>>>(device_x, device_w, device_a, xdims, conv1dims, adims, w_grid);
-
-	cudaStatus = cudaGetLastError();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "addKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-		goto Error;
-	}
+	conv_forward_valid_relu <<<gridDim, blockDim>>> (device_x, device_w, device_a, w_grid);
 
 	cudaDeviceSynchronize();
 
 	cudaMemcpy(a, device_a, size_a, cudaMemcpyDeviceToHost);
 
-Error:
 	cudaFree(device_x);
 	cudaFree(device_a);
 	cudaFree(device_w);
 
-	return cudaStatus;
+	printf("%f, %f, %f", a[0], a[1], a[2]);
 }
 
 static int loadData(float *x, float *y) {
@@ -403,11 +393,7 @@ int main(int argc, char **argv) {
   // get start time
   const auto start = now();
 
-  cudaError_t cudaStatus = kernel_forward(x, conv1);
-	if (cudaStatus != cudaSuccess) {
-		 fprintf(stderr, "addWithCuda failed!");
-		 return 1;
-	}
+  kernel_forward(x, conv1);
   //forward_operation(x, conv1, conv2, fc1, fc2, out);
 
   // get end time
