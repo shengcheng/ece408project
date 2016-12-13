@@ -6,6 +6,12 @@
 #include <map>
 #include <sys/time.h>
 #include <valarray>
+#include <string>
+
+#include <stdio.h>
+
+#include "cuda_runtime.h"
+#include "device_launch_parameters.h"
 
 #include <hdf5.h>
 
@@ -16,6 +22,7 @@
 #define NUM_COLS 28
 #define NUM_CHANNELS 1
 #define NUM_DIGITS 10
+#define TILE_WIDTH 4
 
 static int FLAGS_batch_size = 10000;
 static std::string FLAGS_testdata{};
@@ -103,32 +110,72 @@ static void loadModel(float *conv1, float *conv2, float *fc1, float *fc2) {
 // wdims[0] - height; wdims[1] - width; wdims[2] - c; wdims[3] - m
 // xdims[0] - n - batch size; xdims[1] - height; xdims[2] - width; xdims - c
 // ydims[0] - n - batch size; ydims[1] - height; ydims[2] - width; ydims - m;
-__global__ void conv_forward_valid_relu(float *X, float *W, float *Y, int xdim[4], int wdim[4], int ydim[4]) {
+__global__ void conv_forward_valid_relu(float *X, float *W, float *Y, int xdims[4], int wdims[4], int ydims[4], int W_grid) {
 	int filter_h = wdims[0];
 	int filter_w = wdims[1];
 	int filter_c = wdims[2];
-	int n,m,h,w,c,p,q;
-	int xoffset,woffset,yoffset;
+	int n, m, h, w, c, p, q;
+	int xoffset, woffset, yoffset;
 	n = blockIdx.x;
 	m = blockIdx.y;
-	y_h = blockIdx.z / W_grid + threadIdx.y;
-	y_w = blockIdx.z % W_grid + threadIdx.x;
+	int y_h = blockIdx.z / W_grid * TILE_WIDTH + threadIdx.y;
+	int y_w = blockIdx.z % W_grid * TILE_WIDTH + threadIdx.x;
 	float acc = 0;
-	for(c = 0; c < filter_c; c++)
-	for(p = 0; p < fliter_w; p++)
-	for(q = 0; q < fliter_h; q++)
+	for (c = 0; c < filter_c; c++)
 	{
-	xoffset = n * xidms[1] *xdims[2] * xdims[3] +
-	(y_h + p) * xdims[2] * xdims[3] +
-	(y_w + q) * xdims[3] + c;
-	woffset = p * filter_w * filter_c * m + 
-	q * filter_c * m +
-	c * m + m;
-	acc += X[xoffset] * W[woffset];
-	  
-}   
-	yoffset = ((n * y_h) * width + y_w) * m + m;
-	Y[offset] =(acc < 0) ? 0 : acc;
+		for (p = 0; p < filter_w; p++)
+		{
+			for (q = 0; q < filter_h; q++)
+			{
+				xoffset = n * xdims[1] * xdims[2] * xdims[3] + (y_h + p) * xdims[2] * xdims[3] + (y_w + q) * xdims[3] + c;
+				woffset = p * filter_w * filter_c * m + q * filter_c * m + c * m + m;
+				acc += X[xoffset] * W[woffset];
+			}
+		}
+	}
+	yoffset = ((n * ydims[1] + y_h) * ydims[2] + y_w) * ydims[3] + m;
+	Y[yoffset] = (acc < 0) ? 0 : acc;
+}
+
+void kernel_forward(float *x, float *conv1) {
+	int adims[] = { xdims[0], (xdims[1] - conv1dims[0] + 1),
+		(xdims[2] - conv1dims[1] + 1.), conv1dims[3] };
+	float *device_a;
+	float *device_x;
+	float *device_w;
+	float *a;
+
+	int size_x = sizeof(float) * xdims[0] * xdims[1] * xdims[2] * xdims[3];
+	int size_w = sizeof(float) * conv1dims[0] * conv1dims[1] * conv1dims[2] * conv1dims[3];
+	int size_a = sizeof(float) * adims[0] * adims[1] * adims[2] * adims[3];
+
+	a = (float *)malloc(size_a);
+
+	cudaMalloc((void **)&device_x, size_x);
+	cudaMalloc((void **)&device_w, size_w);
+	cudaMalloc((void **)&device_a, size_a);
+
+	cudaMemcpy(device_x, x, size_x, cudaMemcpyHostToDevice);
+	cudaMemcpy(device_w, conv1, size_w, cudaMemcpyHostToDevice);
+
+	int w_grid = adims[2] / TILE_WIDTH;
+	int h_grid = adims[1] / TILE_WIDTH;
+	int z = w_grid * h_grid;
+
+	dim3 blockDim(TILE_WIDTH, TILE_WIDTH, 1);
+	dim3 gridDim(adims[0], adims[3], z);
+
+	conv_forward_valid_relu <<<gridDim, blockDim>>> (device_x, device_w, device_a, xdims, conv1dims, adims, w_grid);
+
+	cudaMemcpy(a, device_a, size_a, cudaMemcpyDeviceToHost);
+
+	cudaFree(device_x);
+	cudaFree(device_a);
+	cudaFree(device_w);
+
+	for (int i = 0; i < 10; i++) {
+		printf("%f\n", a[i]);
+	}
 }
 
 // From book chapter Figure 16.4
@@ -235,7 +282,7 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
                        float *fc2, int *out) {
   // conv layer
   const int adims[] = {xdims[0], (xdims[1] - conv1dims[0] + 1),
-                       (xdims[2] - conv1dims[1] + 1), conv1dims[3]};
+                       (xdims[2] - conv1dims[1] + 1.), conv1dims[3]};
   auto a = zeros<float>(adims);
   conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
 
@@ -339,7 +386,8 @@ int main(int argc, char **argv) {
   // get start time
   const auto start = now();
 
-  forward_operation(x, conv1, conv2, fc1, fc2, out);
+  kernel_forward(x, conv1);
+  //forward_operation(x, conv1, conv2, fc1, fc2, out);
 
   // get end time
   const auto end = now();
@@ -359,9 +407,9 @@ int main(int argc, char **argv) {
       num_correct++;
     }
   }
-  std::cout << "Done with " << FLAGS_batch_size << " queries in "
-            << "elapsed = " << elapsed << " milliseconds. Correctness: "
-            << static_cast<float>(num_correct) / FLAGS_batch_size << "\n";
+  //std::cout << "Done with " << FLAGS_batch_size << " queries in "
+  //          << "elapsed = " << elapsed << " milliseconds. Correctness: "
+  //          << static_cast<float>(num_correct) / FLAGS_batch_size << "\n";
 
   delete[] x;
   delete[] y;
