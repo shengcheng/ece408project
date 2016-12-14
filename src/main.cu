@@ -98,7 +98,7 @@ __global__ void fully_forward_kernel(float *X, float *W, float *Y, dims_2 x, dim
 	int j = threadIdx.x;
 	float sum = 0;
 
-	for (int k = 0; k <= x.dim[1]; k ++) {
+	for (int k = 0; k <= x.dim[1]; k++) {
 		sum += X[i * x.dim[1] + k] * W[k * w.dim[1] + j];
 	}
 
@@ -110,7 +110,23 @@ __global__ void relu2_kernel(float *X) {
 	X[i] = (X[i] < 0) ? 0 : X[i];
 }
 
-void kernel_forward(float *x, float *conv1, float *conv2, float *fc1, float *fc2) {
+// Choose the guess with largest score
+static void argmax(const float *X, const int xdims[2], int *Y) {
+	for (const auto i : range(0, xdims[0])) {
+		auto max_idx = 0;
+		auto max = X[i * xdims[1]];
+		for (const auto j : range(0, xdims[1])) {
+			const auto elem = X[(i * xdims[1]) + j];
+			if (elem > max) {
+				max_idx = j;
+				max = elem;
+			}
+		}
+		Y[i] = max_idx;
+	}
+}
+
+void kernel_forward(float *x, float *conv1, float *conv2, float *fc1, float *fc2, int *out) {
 	int pool_size = 2;
 
 	int adims[] = { xdims[0], (xdims[1] - conv1dims[0] + 1), (xdims[2] - conv1dims[1] + 1), conv1dims[3] };
@@ -139,7 +155,7 @@ void kernel_forward(float *x, float *conv1, float *conv2, float *fc1, float *fc2
 	}
 
 	dims_2 e_d, f_d, d_2, fc1_d, fc2_d;
-	for (int i = 0; i < 2; i ++) {
+	for (int i = 0; i < 2; i++) {
 		e_d.dim[i] = edims[i];
 		f_d.dim[i] = fdims[i];
 		d_2.dim[i] = ddim2[i];
@@ -226,7 +242,7 @@ void kernel_forward(float *x, float *conv1, float *conv2, float *fc1, float *fc2
 	cudaFree(device_fc1);
 	cudaFree(device_fc2);
 
-	printf("%f, %f, %f\n", f[0], f[1], f[2]);
+	argmax(f, fdims, out);
 }
 
 static int loadData(float *x, float *y) {
@@ -507,7 +523,7 @@ int main(int argc, char **argv) {
   // get start time
   const auto start = now();
 
-  kernel_forward(x, conv1, conv2, fc1, fc2);
+  kernel_forward(x, conv1, conv2, fc1, fc2, out);
   //forward_operation(x, conv1, conv2, fc1, fc2, out);
 
   // get end time
@@ -528,9 +544,9 @@ int main(int argc, char **argv) {
       num_correct++;
     }
   }
-  //std::cout << "Done with " << FLAGS_batch_size << " queries in "
-  //          << "elapsed = " << elapsed << " milliseconds. Correctness: "
-  //          << static_cast<float>(num_correct) / FLAGS_batch_size << "\n";
+  std::cout << "Done with " << FLAGS_batch_size << " queries in "
+           << "elapsed = " << elapsed << " milliseconds. Correctness: "
+           << static_cast<float>(num_correct) / FLAGS_batch_size << "\n";
 
   delete[] x;
   delete[] y;
