@@ -154,10 +154,9 @@ void kernel_forward(float *x, float *conv1, float *conv2, float *fc1, float *fc2
 		w_2.dim[i] = conv2dims[i];
 	}
 
-	dims_2 e_d, f_d, d_2, fc1_d, fc2_d;
+	dims_2 e_d, d_2, fc1_d, fc2_d;
 	for (int i = 0; i < 2; i++) {
 		e_d.dim[i] = edims[i];
-		f_d.dim[i] = fdims[i];
 		d_2.dim[i] = ddim2[i];
 		fc1_d.dim[i] = fc1dims[i];
 		fc2_d.dim[i] = fc2dims[i];
@@ -397,21 +396,6 @@ static void fully_forward(const float *X, const int xdims[2], float *W,
   }
 }
 
-// Choose the guess with largest score
-static void argmax(const float *X, const int xdims[2], int *Y) {
-  for (const auto i : range(0, xdims[0])) {
-    auto max_idx = 0;
-    auto max     = X[i * xdims[1]];
-    for (const auto j : range(0, xdims[1])) {
-      const auto elem = X[(i * xdims[1]) + j];
-      if (elem > max) {
-        max_idx = j;
-        max     = elem;
-      }
-    }
-    Y[i] = max_idx;
-  }
-}
 
 // Forward operation for the CNN, a combination of conv layer + average pooling
 // + relu
@@ -419,7 +403,7 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
                        float *fc2, int *out) {
   // conv layer
   const int adims[] = {xdims[0], (xdims[1] - conv1dims[0] + 1),
-                       (xdims[2] - conv1dims[1] + 1.), conv1dims[3]};
+                       (xdims[2] - conv1dims[1] + 1), conv1dims[3]};
   auto a = zeros<float>(adims);
   conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
 
