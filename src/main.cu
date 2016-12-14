@@ -22,7 +22,8 @@
 #define NUM_COLS 28
 #define NUM_CHANNELS 1
 #define NUM_DIGITS 10
-#define TILE_WIDTH 12
+
+#define TILE_WIDTH 2
 
 static int FLAGS_batch_size = 10000;
 static std::string FLAGS_testdata{};
@@ -38,14 +39,13 @@ static int conv2dims[] = {5, 5, 32, 64};
 static int fc1dims[]   = {1024, 128};
 static int fc2dims[]   = {128, 10};
 
-__constant__ int device_wdims[4];
 __constant__ int device_xdims[4];
 __constant__ int device_adims[4];
+__constant__ int device_bdims[4];
+__constant__ int device_cdims[4];
+__constant__ int device_ddims[4];
 
-__global__ void conv_forward_valid_relu(float *X, float *W, float *Y, int W_grid) {
-	int filter_h = device_wdims[0];
-	int filter_w = device_wdims[1];
-	int filter_c = device_wdims[2];
+__global__ void conv_forward_valid_relu(float *X, float *W, float *Y, int filter_h, int filter_w, int filter_c, int W_grid) {
 	int n, m, c, p, q;
 	int xoffset, woffset, yoffset;
 	n = blockIdx.x;
@@ -60,8 +60,8 @@ __global__ void conv_forward_valid_relu(float *X, float *W, float *Y, int W_grid
 		{
 			for (q = 0; q < filter_h; q++)
 			{
-				xoffset = n * device_xdims[1] * device_xdims[2] * device_xdims[3] + (y_h + p) * device_xdims[2] * device_xdims[3] + (y_w + q) * device_xdims[3] + c;
-				woffset = p * filter_w * filter_c * m + q * filter_c * m + c * m + m;
+				xoffset = ((n * device_xdims[1] + (y_h + p)) * device_xdims[2] + (y_w + q)) * device_xdims[3] + c;
+				woffset = ((p * filter_w + q) * filter_c + c) * m + m;
 				acc += X[xoffset] * W[woffset];
 			}
 		}
@@ -71,48 +71,110 @@ __global__ void conv_forward_valid_relu(float *X, float *W, float *Y, int W_grid
 	Y[yoffset] = (acc < 0) ? 0 : acc;
 }
 
-void kernel_forward(float *x, float *conv1) {
+__global__ void average_pool_kernel(float *X, float *Y, int pool_size, int W_grid) {
+	int n, m, p, q;
+	int xoffset, yoffset;
+	n = blockIdx.x;
+	m = blockIdx.y;
+	int y_h = blockIdx.z / W_grid * TILE_WIDTH + threadIdx.y;
+	int y_w = blockIdx.z % W_grid * TILE_WIDTH + threadIdx.x;
+	float acc = 0;
+
+	for (p = 0; p < pool_size; p++)
+	{
+		for (q = 0; q < pool_size; q++)
+		{
+			xoffset = ((n * device_xdims[1] + (pool_size * y_h + p)) * device_xdims[2] + (pool_size * y_w + q)) * device_xdims[3] + m;
+			acc += X[xoffset] / (1.0f * pool_size * pool_size);
+		}
+	}
+
+	yoffset = ((n * device_adims[1] + y_h) * device_adims[2] + y_w) * device_adims[3] + m;
+	Y[yoffset] = acc;
+}
+
+void kernel_forward(float *x, float *conv1, float *conv2) {
+	int pool_size = 2;
+
 	int adims[] = { xdims[0], (xdims[1] - conv1dims[0] + 1), (xdims[2] - conv1dims[1] + 1), conv1dims[3] };
-	float *device_a;
+	int bdims[] = { adims[0], adims[1] / pool_size, adims[2] / pool_size, adims[3] };
+	int cdims[] = { bdims[0], (bdims[1] - conv2dims[0] + 1), (bdims[2] - conv2dims[1] + 1), conv2dims[3] };
+	int ddims[] = { cdims[0], cdims[1] / pool_size, cdims[2] / pool_size, cdims[3] };
+	float *device_a, *device_b, *device_c, *device_d;
 	float *device_x;
-	float *device_w;
-	float *a;
+	float *device_w_1;
+	float *device_w_2;
 
 	int size_x = sizeof(float) * xdims[0] * xdims[1] * xdims[2] * xdims[3];
-	int size_w = sizeof(float) * conv1dims[0] * conv1dims[1] * conv1dims[2] * conv1dims[3];
+	int size_w_1 = sizeof(float) * conv1dims[0] * conv1dims[1] * conv1dims[2] * conv1dims[3];
+	int size_w_2 = sizeof(float) * conv2dims[0] * conv2dims[1] * conv2dims[2] * conv2dims[3];
 	int size_a = sizeof(float) * adims[0] * adims[1] * adims[2] * adims[3];
+	int size_b = sizeof(float) * bdims[0] * bdims[1] * bdims[2] * bdims[3];
+	int size_c = sizeof(float) * cdims[0] * cdims[1] * cdims[2] * cdims[3];
+	int size_d = sizeof(float) * ddims[0] * ddims[1] * ddims[2] * ddims[3];
 
-	int w_grid = adims[2] / TILE_WIDTH;
-	int h_grid = adims[1] / TILE_WIDTH;
-	int z = w_grid * h_grid;
+	int w_grid_a = adims[2] / TILE_WIDTH;
+	int h_grid_a = adims[1] / TILE_WIDTH;
+	int z_a = w_grid_a * h_grid_a;
 
-	a = (float *)malloc(size_a);
+	int w_grid_b = bdims[2] / TILE_WIDTH;
+	int h_grid_b = bdims[1] / TILE_WIDTH;
+	int z_b = w_grid_b * h_grid_b;
+
+	int w_grid_c = cdims[2] / TILE_WIDTH;
+	int h_grid_c = cdims[1] / TILE_WIDTH;
+	int z_c = w_grid_c * h_grid_c;
+
+	int w_grid_d = ddims[2] / TILE_WIDTH;
+	int h_grid_d = ddims[1] / TILE_WIDTH;
+	int z_d = w_grid_d * h_grid_d;
+
+	float *d;
+	d = (float *)malloc(size_d);
 
 	cudaMalloc((void **)&device_x, size_x);
-	cudaMalloc((void **)&device_w, size_w);
+	cudaMalloc((void **)&device_w_1, size_w_1);
+	cudaMalloc((void **)&device_w_2, size_w_2);
 	cudaMalloc((void **)&device_a, size_a);
+	cudaMalloc((void **)&device_b, size_b);
+	cudaMalloc((void **)&device_c, size_c);
+	cudaMalloc((void **)&device_d, size_d);
 
 	cudaMemcpy(device_x, x, size_x, cudaMemcpyHostToDevice);
-	cudaMemcpy(device_w, conv1, size_w, cudaMemcpyHostToDevice);
+	cudaMemcpy(device_w_1, conv1, size_w_1, cudaMemcpyHostToDevice);
+	cudaMemcpy(device_w_2, conv2, size_w_2, cudaMemcpyHostToDevice);
 
-	cudaMemcpyToSymbol(device_wdims, conv1dims, 4 * sizeof(int));
 	cudaMemcpyToSymbol(device_xdims, xdims, 4 * sizeof(int));
 	cudaMemcpyToSymbol(device_adims, adims, 4 * sizeof(int));
+	cudaMemcpyToSymbol(device_bdims, bdims, 4 * sizeof(int));
+	cudaMemcpyToSymbol(device_cdims, cdims, 4 * sizeof(int));
+	cudaMemcpyToSymbol(device_ddims, ddims, 4 * sizeof(int));
+
 
 	dim3 blockDim(TILE_WIDTH, TILE_WIDTH, 1);
-	dim3 gridDim(adims[0], adims[3], z);
+	dim3 gridDim_a(adims[0], adims[3], z_a);
+	dim3 gridDim_b(bdims[0], bdims[3], z_b);
+	dim3 gridDim_c(cdims[0], cdims[3], z_c);
+	dim3 gridDim_d(ddims[0], ddims[3], z_d);
 
-	conv_forward_valid_relu <<<gridDim, blockDim>>> (device_x, device_w, device_a, w_grid);
+	conv_forward_valid_relu <<<gridDim_a, blockDim>>> (device_x, device_w_1, device_a, conv1dims[0], conv1dims[1], conv1dims[2], w_grid_a);
+	average_pool_kernel <<<gridDim_b, blockDim>>> (device_a, device_b, pool_size, w_grid_b);
+	conv_forward_valid_relu <<<gridDim_b, blockDim>>> (device_b, device_w_2, device_c, conv2dims[0], conv2dims[1], conv2dims[2], w_grid_c);
+	average_pool_kernel <<<gridDim_d, blockDim >>> (device_c, device_d, pool_size, w_grid_d);
 
 	cudaDeviceSynchronize();
 
-	cudaMemcpy(a, device_a, size_a, cudaMemcpyDeviceToHost);
+	cudaMemcpy(d, device_d, size_d, cudaMemcpyDeviceToHost);
 
 	cudaFree(device_x);
+	cudaFree(device_w_1);
+	cudaFree(device_w_2);
 	cudaFree(device_a);
-	cudaFree(device_w);
+	cudaFree(device_b);
+	cudaFree(device_c);
+	cudaFree(device_d);
 
-	printf("%f, %f, %f", a[0], a[1], a[2]);
+	printf("%f, %f, %f\n", d[0], d[1], d[2]);
 }
 
 static int loadData(float *x, float *y) {
@@ -393,7 +455,7 @@ int main(int argc, char **argv) {
   // get start time
   const auto start = now();
 
-  kernel_forward(x, conv1);
+  kernel_forward(x, conv1, conv2);
   //forward_operation(x, conv1, conv2, fc1, fc2, out);
 
   // get end time
