@@ -24,6 +24,7 @@
 #define NUM_DIGITS 10
 
 #define TILE_WIDTH 2
+#define BLOCK_SIZE 64
 
 static int FLAGS_batch_size = 10000;
 static std::string FLAGS_testdata{};
@@ -193,7 +194,7 @@ void fully_forward_parallel(float *x, float *w, float *y, const int xdims[2], co
 	cudaFree(device_y);
 }
 
-__global__ void unroll_kernel(float *X, float *X_unrolled, dims x, dims w, dims y) {
+__global__ void unroll_x_kernel(float *X, float *X_unrolled, dims x, dims w, dims y) {
 	int c, s, h_out, w_out, h_unroll, w_unroll, w_base, p, q, xoffset;
 	int t = blockDim.y * blockIdx.y + threadIdx.x;
 	int n = blockIdx.x;
@@ -222,7 +223,7 @@ __global__ void unroll_kernel(float *X, float *X_unrolled, dims x, dims w, dims 
 	}
 }
 
-void unroll_gpu(float *x, float *x_unroll, int xdims[4], int wdims[4], int ydims[4]) {
+void unroll_x(float *x, float *x_unroll, int xdims[4], int wdims[4], int ydims[4]) {
 	float *device_x, *device_x_unroll;
 
 	int H_out = ydims[1];
@@ -237,7 +238,8 @@ void unroll_gpu(float *x, float *x_unroll, int xdims[4], int wdims[4], int ydims
 	}
 
 	int num_threads = C * H_out * W_out;
-	int num_blocks = ceil(1.0 * num_threads / 1024);
+	int num_blocks = num_threads / 1024;
+	if (num_threads % 1024 > 0) num_blocks++;
 
 	int size_x = sizeof(float) * xdims[0] * xdims[1] * xdims[2] * xdims[3];
 	int size_x_unroll = size_x * wdims[0] * wdims[1] * wdims[2] * ydims[0] * ydims[1] * ydims[2];
@@ -250,12 +252,114 @@ void unroll_gpu(float *x, float *x_unroll, int xdims[4], int wdims[4], int ydims
 	dim3 DimBlock(1024, 1, 1);
 	dim3 DimGrid(xdims[0], num_blocks, 1);
 
-	unroll_kernel <<<DimGrid, DimBlock>>> (device_x, device_x_unroll, x_d, w_d, y_d);
+	unroll_x_kernel <<<DimGrid, DimBlock>>> (device_x, device_x_unroll, x_d, w_d, y_d);
 
 	cudaMemcpy(x_unroll, device_x_unroll, size_x_unroll, cudaMemcpyDeviceToHost);
 
 	cudaFree(device_x);
 	cudaFree(device_x_unroll);
+}
+
+__global__ void unroll_w_kernel(float *W, float *W_unroll, dims w, int size) {
+	int row, col, w_unroll, idx_base, woffset;
+	int t = blockDim.y * blockIdx.y + threadIdx.x;
+	int H_filter = w.dim[0];
+	int W_filter = w.dim[1];
+	int C = w.dim[2];
+
+	if (t < size) {
+		row = t / C;
+		col = t % C;
+		w_unroll = H_filter * W_filter * C;
+		idx_base = row * w_unroll + col * H_filter * W_filter;
+		for (int p = 0; p < H_filter; p++) {
+			for (int q = 0; q < W_filter; q++) {
+				woffset = ((p * w.dim[1] + q) * w.dim[2] + col) * w.dim[3] + row;
+				W_unroll[idx_base + p * W_filter + q] = W[woffset];
+			}
+		}
+	}
+}
+
+void unroll_w(float *w, float *w_unroll, int wdims[4], int ydims[4]) {
+	float *device_w, *device_w_unroll;
+
+	int C = wdims[2];
+	int M = ydims[3];
+
+	dims w_d;
+	for (int i = 0; i < 4; i++) {
+		w_d.dim[i] = wdims[i];
+	}
+
+	int num_threads = C * M;
+	int num_blocks = num_threads / BLOCK_SIZE;
+	if (num_threads % BLOCK_SIZE > 0) num_blocks++;
+
+	int size_w = sizeof(float) * wdims[0] * wdims[1] * wdims[2] * wdims[3];
+	int size_w_unroll = size_w;
+
+	cudaMalloc((void **)&device_w, size_w);
+	cudaMalloc((void **)&device_w_unroll, size_w_unroll);
+
+	cudaMemcpy(device_w, w, size_w, cudaMemcpyHostToDevice);
+
+	dim3 DimBlock(BLOCK_SIZE, 1, 1);
+	dim3 DimGrid(xdims[0], num_blocks, 1);
+
+	unroll_w_kernel <<<DimGrid, DimBlock>>> (device_w, device_w_unroll, w_d, num_threads);
+
+	cudaMemcpy(w_unroll, device_w_unroll, size_w_unroll, cudaMemcpyDeviceToHost);
+
+	cudaFree(device_w);
+	cudaFree(device_w_unroll);
+}
+
+__global__ void matrixMultiplyShared(float *A, float *B, float *C,
+	int numARows, int numAColumns,
+	int numBRows, int numBColumns,
+	int numCRows, int numCColumns) {
+	//@@ Insert code to implement matrix multiplication here
+	//@@ You have to use shared memory for this MP
+	__shared__ float subTileA[TILE_WIDTH][TILE_WIDTH];
+	__shared__ float subTileB[TILE_WIDTH][TILE_WIDTH];
+
+	int bx = blockIdx.x;
+	int by = blockIdx.y;
+	int tx = threadIdx.x;
+	int ty = threadIdx.y;
+
+	int Row = by * blockDim.y + ty;
+	int Col = bx * blockDim.x + tx;
+	float Cvalue = 0.0;
+	int numOfTiles = numAColumns / TILE_WIDTH;
+	if (numAColumns % TILE_WIDTH) numOfTiles++;
+
+	for (int m = 0; m < numOfTiles; m++) {
+		if ((m * TILE_WIDTH + tx < numAColumns) && (Row < numARows)) {
+			subTileA[ty][tx] = A[Row * numAColumns + m * TILE_WIDTH + tx];
+		}
+		else {
+			subTileA[ty][tx] = 0.0;
+		}
+		if ((m * TILE_WIDTH + ty < numBRows) && (Col < numBColumns)) {
+			subTileB[ty][tx] = B[(m * TILE_WIDTH + ty) * numBColumns + Col];
+		}
+		else {
+			subTileB[ty][tx] = 0.0;
+		}
+
+		__syncthreads();
+
+		for (int k = 0; k < TILE_WIDTH; k++) {
+			Cvalue += subTileA[ty][k] * subTileB[k][tx];
+		}
+		__syncthreads();
+	}
+
+	if (Row < numCRows && Col < numCColumns) {
+		C[Row * numBColumns + Col] = Cvalue;
+	}
 }
 
 // Choose the guess with largest score
