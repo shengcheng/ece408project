@@ -367,11 +367,14 @@ void conv_forward_unroll(float *x, float *w, float *y, const int xdims[4], const
 
 	for (int i = 0; i < xdims[0]; i++) {
 		unroll_x_kernel <<<DimGrid_unroll_x, DimBlock_unroll_x>>> (device_x + i * stripe_x, device_x_unroll, x_d, w_d, y_d);
+		cudaDeviceSynchronize();
 		matrixMultiplyShared <<<DimGrid_matmul, DimBlock_matmul>>> (device_w_unroll, device_x_unroll, device_y_unroll,
 			numARows, numAColumns,
 			numBRows, numBColumns,
 			numCRows, numCColumns);
+		cudaDeviceSynchronize();
 		reroll_y_kernel <<<DimGrid_reroll_y, DimBlock_reroll_y>>> (device_y_unroll, device_y + i * stripe_y, y_d);
+		cudaDeviceSynchronize();
 	}
 
 	cudaMemcpy(y, device_y, size_y, cudaMemcpyDeviceToHost);
