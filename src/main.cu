@@ -23,8 +23,10 @@
 #define NUM_CHANNELS 1
 #define NUM_DIGITS 10
 
-#define TILE_WIDTH 2
+
 #define BLOCK_SIZE 64
+#define TILE_WIDTH 16
+#define MAX_THREADS	1024
 
 static int FLAGS_batch_size = 10000;
 static std::string FLAGS_testdata{};
@@ -195,21 +197,21 @@ void fully_forward_parallel(float *x, float *w, float *y, const int xdims[2], co
 	cudaFree(device_y);
 }
 */
-__global__ void unroll_x_kernel(float *X, float *X_unrolled, dims x, dims w, dims y) {
+
+
+__global__ void unroll_x_kernel(float *X, float *X_unroll, dims x, dims w, dims y) {
 	int c, s, h_out, w_out, h_unroll, w_unroll, w_base, p, q, xoffset;
-	int t = blockDim.y * blockIdx.y + threadIdx.x;
-	int n = blockIdx.x;
+	int index = blockDim.x * blockIdx.x + threadIdx.x;
 	int H_filter = w.dim[0];
 	int W_filter = w.dim[1];
 	int H_out = y.dim[1];
 	int W_out = y.dim[2];
 	int C = w.dim[2];
 	int W_unroll = H_out * W_out;
-	int H_unroll = C * H_filter * W_filter;
 
-	if (t < C * W_unroll) {
-		c = t / W_unroll;
-		s = t % W_unroll;
+	if (index < C * W_unroll) {
+		c = index / W_unroll;
+		s = index % W_unroll;
 		h_out = s / W_out;
 		w_out = s % W_out;
 		h_unroll = h_out * W_out + w_out;
@@ -217,111 +219,49 @@ __global__ void unroll_x_kernel(float *X, float *X_unrolled, dims x, dims w, dim
 		for (int p = 0; p < H_filter; p++) {
 			for (int q = 0; q < W_filter; q++) {
 				w_unroll = w_base + p * W_filter + q;
-				xoffset = ((n * x.dim[1] + (h_out + p)) * x.dim[2] + (w_out + q)) * x.dim[3] + c;
-				X_unrolled[(n * H_unroll + h_unroll) * W_unroll + w_unroll] = X[xoffset];
+				xoffset = ((h_out + p) * x.dim[2] + (w_out + q)) * x.dim[3] + c;
+				X_unroll[W_unroll * w_unroll + h_unroll] = X[xoffset];
 			}
 		}
 	}
 }
 
-void unroll_x(float *x, float *x_unroll, int xdims[4], int wdims[4], int ydims[4]) {
-	float *device_x, *device_x_unroll;
-
-	int H_out = ydims[1];
-	int W_out = ydims[2];
-	int C = wdims[2];
-
-	dims y_d, w_d, x_d;
-	for (int i = 0; i < 4; i++) {
-		y_d.dim[i] = ydims[i];
-		x_d.dim[i] = xdims[i];
-		w_d.dim[i] = wdims[i];
-	}
-
-	int num_threads = C * H_out * W_out;
-	int num_blocks = num_threads / 1024;
-	if (num_threads % 1024 > 0) num_blocks++;
-
-	int size_x = sizeof(float) * xdims[0] * xdims[1] * xdims[2] * xdims[3];
-	int size_x_unroll = size_x * wdims[0] * wdims[1] * wdims[2] * ydims[0] * ydims[1] * ydims[2];
-
-	cudaMalloc((void **)&device_x, size_x);
-	cudaMalloc((void **)&device_x_unroll, size_x_unroll);
-
-	cudaMemcpy(device_x, x, size_x, cudaMemcpyHostToDevice);
-
-	dim3 DimBlock(1024, 1, 1);
-	dim3 DimGrid(xdims[0], num_blocks, 1);
-
-	unroll_x_kernel <<<DimGrid, DimBlock>>> (device_x, device_x_unroll, x_d, w_d, y_d);
-
-	cudaMemcpy(x_unroll, device_x_unroll, size_x_unroll, cudaMemcpyDeviceToHost);
-
-	cudaFree(device_x);
-	cudaFree(device_x_unroll);
-}
-
-__global__ void unroll_w_kernel(float *W, float *W_unroll, dims w, int size) {
-	int row, col, w_unroll, idx_base, woffset;
-	int t = blockDim.y * blockIdx.y + threadIdx.x;
+__global__ void unroll_w_kernel(float *W, float *W_unroll, dims w, int stride) {
+	int index = blockDim.y * blockIdx.y + threadIdx.x;
 	int H_filter = w.dim[0];
 	int W_filter = w.dim[1];
-	int C = w.dim[2];
 
-	if (t < size) {
-		row = t / C;
-		col = t % C;
-		w_unroll = H_filter * W_filter * C;
-		idx_base = row * w_unroll + col * H_filter * W_filter;
-		for (int p = 0; p < H_filter; p++) {
-			for (int q = 0; q < W_filter; q++) {
-				woffset = ((p * w.dim[1] + q) * w.dim[2] + col) * w.dim[3] + row;
-				W_unroll[idx_base + p * W_filter + q] = W[woffset];
-			}
+	if (index < stride) {
+		int size = H_filter * W_filter;
+		for (int i = 0; i < size; i++) {
+			W_unroll[index * size + i] = W[index + i * stride];
 		}
 	}
 }
 
-void unroll_w(float *w, float *w_unroll, int wdims[4], int ydims[4]) {
-	float *device_w, *device_w_unroll;
+__global__ void reroll_y_kernel(float *Y, float *Y_roll, dims y) {
+	int y_h, y_w, offset;
+	int index = blockDim.x * blockIdx.x + threadIdx.x;
+	int H_out = y.dim[1];
+	int W_out = y.dim[2];
+	int M = y.dim[3];
+	int stride = H_out * W_out;
 
-	int C = wdims[2];
-	int M = ydims[3];
-
-	dims w_d;
-	for (int i = 0; i < 4; i++) {
-		w_d.dim[i] = wdims[i];
+	if (index < stride) {
+		y_h = index / W_out;
+		y_w = index % W_out;
+		for (int i = 0; i < M; i++) {
+			offset = (y_h * y.dim[2] + y_w) * y.dim[3] + i;
+			Y_roll[offset] = Y[i * stride + index];
+		}
 	}
-
-	int num_threads = C * M;
-	int num_blocks = num_threads / BLOCK_SIZE;
-	if (num_threads % BLOCK_SIZE > 0) num_blocks++;
-
-	int size_w = sizeof(float) * wdims[0] * wdims[1] * wdims[2] * wdims[3];
-	int size_w_unroll = size_w;
-
-	cudaMalloc((void **)&device_w, size_w);
-	cudaMalloc((void **)&device_w_unroll, size_w_unroll);
-
-	cudaMemcpy(device_w, w, size_w, cudaMemcpyHostToDevice);
-
-	dim3 DimBlock(BLOCK_SIZE, 1, 1);
-	dim3 DimGrid(xdims[0], num_blocks, 1);
-
-	unroll_w_kernel <<<DimGrid, DimBlock>>> (device_w, device_w_unroll, w_d, num_threads);
-
-	cudaMemcpy(w_unroll, device_w_unroll, size_w_unroll, cudaMemcpyDeviceToHost);
-
-	cudaFree(device_w);
-	cudaFree(device_w_unroll);
 }
 
 __global__ void matrixMultiplyShared(float *A, float *B, float *C,
 	int numARows, int numAColumns,
 	int numBRows, int numBColumns,
 	int numCRows, int numCColumns) {
-	//@@ Insert code to implement matrix multiplication here
-	//@@ You have to use shared memory for this MP
+
 	__shared__ float subTileA[TILE_WIDTH][TILE_WIDTH];
 	__shared__ float subTileB[TILE_WIDTH][TILE_WIDTH];
 
@@ -349,9 +289,7 @@ __global__ void matrixMultiplyShared(float *A, float *B, float *C,
 		else {
 			subTileB[ty][tx] = 0.0;
 		}
-
 		__syncthreads();
-
 		for (int k = 0; k < TILE_WIDTH; k++) {
 			Cvalue += subTileA[ty][k] * subTileB[k][tx];
 		}
@@ -361,6 +299,88 @@ __global__ void matrixMultiplyShared(float *A, float *B, float *C,
 	if (Row < numCRows && Col < numCColumns) {
 		C[Row * numBColumns + Col] = Cvalue;
 	}
+}
+
+void unroll_weights(float *W, float *W_unroll, dims w) {
+	int c, m, row, col;
+	int unroll_offset, offset;
+	int filter_h = w.dim[0];
+	int filter_w = w.dim[1];
+	int C = w.dim[2];
+	int M = w.dim[2];
+	for (row = 0; row < filter_h; row++) {
+		for (col = 0; col < filter_w; col++) {
+			for (c = 0; c < C; c++) {
+				for (m = 0; m < M; m++) {
+					unroll_offset = ((m * C + c) * filter_h + row) * filter_w + col;
+					offset = ((row * filter_w + col) * C + c) * M + m;
+					W_unroll[unroll_offset] = W[offset];
+				}
+			}
+		}
+	}
+}
+
+void conv_forward_unroll(float *x, float *w, float *y, const int xdims[4], const int wdims[4], const int ydims[4]) {
+	float *device_x, *device_y, *device_x_unroll, *device_w_unroll, *device_y_unroll;
+
+	dims y_d, w_d, x_d;
+	for (int i = 0; i < 4; i++) {
+		y_d.dim[i] = ydims[i];
+		x_d.dim[i] = xdims[i];
+		w_d.dim[i] = wdims[i];
+	}
+
+	int numAColumns = wdims[0] * wdims[1] * wdims[2], numARows = ydims[3];
+	int numBColumns = ydims[1] * ydims[2], numBRows = wdims[0] * wdims[1] * wdims[2];
+	int numCColumns = numBColumns, numCRows = numARows;
+
+	int size_x = sizeof(float) * xdims[0] * xdims[1] * xdims[2] * xdims[3];
+	int size_y = sizeof(float) * ydims[0] * ydims[1] * ydims[2] * ydims[3];
+	int size_x_unroll = sizeof(float) * wdims[0] * wdims[1] * wdims[2] * ydims[1] * ydims[2];
+	int size_w_unroll = sizeof(float) * wdims[0] * wdims[1] * wdims[2] * ydims[3];
+	int size_y_unroll = sizeof(float) * ydims[1] * ydims[2] * ydims[3];
+
+	int stripe_x = xdims[1] * xdims[2] * xdims[3];
+	int stripe_y = ydims[1] * ydims[2] * ydims[3];
+
+	cudaMalloc((void **)&device_x, size_x);
+	cudaMalloc((void **)&device_y, size_y);
+	cudaMalloc((void **)&device_x_unroll, size_x_unroll);
+	cudaMalloc((void **)&device_w_unroll, size_w_unroll);
+	cudaMalloc((void **)&device_y_unroll, size_y_unroll);
+
+	float * w_unroll = (float *)malloc(size_w_unroll * sizeof(float));
+	unroll_weights(w, w_unroll, w_d);
+
+	cudaMemcpy(device_x, x, size_x, cudaMemcpyHostToDevice);
+	cudaMemcpy(device_w_unroll, w_unroll, size_w_unroll, cudaMemcpyHostToDevice);
+
+	dim3 DimBlock_unroll_x(MAX_THREADS, 1, 1);
+	dim3 DimGrid_unroll_x(ceil((float)(wdims[2] * ydims[1] * ydims[2]) / MAX_THREADS), 1, 1);
+
+	dim3 DimBlock_matmul(TILE_WIDTH, TILE_WIDTH, 1);
+	dim3 DimGrid_matmul(ceil((float)(ydims[1] * ydims[2]) / TILE_WIDTH), ceil((float)(ydims[3]) / TILE_WIDTH), 1);
+
+	dim3 DimBlock_reroll_y(MAX_THREADS, 1, 1);
+	dim3 DimGrid_reroll_y(ceil((float)(ydims[1] * ydims[2] * ydims[3]) / MAX_THREADS), 1, 1);
+
+	for (int i = 0; i < xdims[0]; i++) {
+		unroll_x_kernel <<<DimGrid_unroll_x, DimBlock_unroll_x>>> (device_x + i * stripe_x, device_x_unroll, x_d, w_d, y_d);
+		matrixMultiplyShared <<<DimGrid_matmul, DimBlock_matmul>>> (device_w_unroll, device_x_unroll, device_y_unroll,
+			numARows, numAColumns,
+			numBRows, numBColumns,
+			numCRows, numCColumns);
+		reroll_y_kernel <<<DimGrid_reroll_y, DimBlock_reroll_y>>> (device_y_unroll, device_y + i * stripe_y, y_d);
+	}
+
+	cudaMemcpy(y, device_y, size_y, cudaMemcpyDeviceToHost);
+
+	cudaFree(device_x);
+	cudaFree(device_y);
+	cudaFree(device_y_unroll);
+	cudaFree(device_x_unroll);
+	cudaFree(device_w_unroll);
 }
 
 // Choose the guess with largest score
@@ -536,18 +556,14 @@ static void fully_forward(const float *X, const int xdims[2], float *W,
 // + relu
 void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
                        float *fc2, int *out) {
-	const auto start = now();
+	const auto start1 = now();
   // conv layer
   const int adims[] = {xdims[0], (xdims[1] - conv1dims[0] + 1),
                        (xdims[2] - conv1dims[1] + 1), conv1dims[3]};
   auto a = zeros<float>(adims);
+  auto y = zeros<float>(admis);
   conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
-
-  const auto end = now();
-  const auto elapsed =
-      std::chrono::duration<double, std::milli>(end - start).count();
-  std::cout << "elapsed = " << elapsed << " milliseconds" << "\n";
-  /*
+  
   /// relu layer
   relu4(a, adims);
 
@@ -558,6 +574,24 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   auto b = zeros<float>(bdims);
   average_pool(a, adims, pool_size, b, bdims);
 
+  const auto end1 = now();
+  const auto elapsed =
+      std::chrono::duration<double, std::milli>(end1 - start1).count();
+  std::cout << "elapsed = " << elapsed << " milliseconds" << "\n";
+
+  const auto start2 = now();
+  conv_forward_unroll(x, w, y, xdims, wdims, adims);
+
+  const auto end2 = now();
+  const auto elapsed =
+      std::chrono::duration<double, std::milli>(end2 - start2).count();
+  std::cout << "elapsed = " << elapsed << " milliseconds" << "\n";
+  for(int i =0; i<65535; i++) {
+  	if(a[i] != y[i]) print("error %d",i);
+  }
+
+
+/*
   // conv layer
   const int cdims[] = {bdims[0], (bdims[1] - conv2dims[0] + 1),
                        (bdims[2] - conv2dims[1] + 1), conv2dims[3]};
