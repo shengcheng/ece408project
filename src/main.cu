@@ -641,8 +641,8 @@ int main(int argc, char **argv) {
   // get start time
   const auto start = now();
 
-  kernel_forward(x, conv1, conv2, fc1, fc2, out);
-  //forward_operation(x, conv1, conv2, fc1, fc2, out);
+  //kernel_forward(x, conv1, conv2, fc1, fc2, out);
+  forward_operation(x, conv1, conv2, fc1, fc2, out);
 
   // get end time
   const auto end = now();
