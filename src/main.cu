@@ -24,7 +24,7 @@
 #define NUM_DIGITS 10
 
 #define TILE_WIDTH 16
-#define MAX_THREADS	1024
+#define MAX_THREADS 1024
 
 static int FLAGS_batch_size = 10000;
 static std::string FLAGS_testdata{};
@@ -144,6 +144,53 @@ __global__ void matrixMultiplyShared(float *A, float *B, float *C,
 	if (Row < numCRows && Col < numCColumns) {
 		C[Row * numBColumns + Col] = Cvalue;
 	}
+}
+
+__global__ void average_pool_kernel(float *X, float *Y, int pool_size, dims x, dims y) {
+	int xoffset, yoffset;
+	int n = blockIdx.x;
+	int m = blockIdx.y;
+	int y_h = threadIdx.x;
+	int y_w = threadIdx.y;
+	float acc = 0;
+
+	for (int p = 0; p < pool_size; p++) {
+		for (int q = 0; q < pool_size; q++) {
+			xoffset = ((n * x.dim[1] + (pool_size * y_h + p)) * x.dim[2] + (pool_size * y_w + q)) * x.dim[3] + m;
+			acc += X[xoffset];
+		}
+	}
+
+	yoffset = ((n * y.dim[1] + y_h) * y.dim[2] + y_w) * y.dim[3] + m;
+	Y[yoffset] = acc / (float)(pool_size * pool_size);
+}
+
+void average_pool_parallel(float *x, float *y, const int xdims[4], const int ydims[4], int pool_size) {
+	float *device_x, *device_y;
+
+	dims y_d, x_d;
+	for (int i = 0; i < 4; i++) {
+		y_d.dim[i] = ydims[i];
+		x_d.dim[i] = xdims[i];
+	}
+
+	int size_x = sizeof(float) * xdims[0] * xdims[1] * xdims[2] * xdims[3];
+	int size_y = sizeof(float) * ydims[0] * ydims[1] * ydims[2] * ydims[3];
+
+	cudaMalloc((void **)&device_x, size_x);
+	cudaMalloc((void **)&device_y, size_y);
+
+	cudaMemcpy(device_x, x, size_x, cudaMemcpyHostToDevice);
+
+	dim3 DimGrid(ydims[0], ydims[3], 1);
+	dim3 DimBlock(ydims[1], ydims[2], 1);
+
+	average_pool_kernel <<<DimGrid, DimBlock>>> (device_x, device_y, pool_size, x_d, y_d);
+
+	cudaMemcpy(y, device_y, size_y, cudaMemcpyDeviceToHost);
+
+	cudaFree(device_x);
+	cudaFree(device_y);
 }
 
 void unroll_weights(float *W, float *W_unroll, dims w) {
@@ -415,7 +462,8 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
 	const int bdims[] = { adims[0], adims[1] / pool_size, adims[2] / pool_size,
 		adims[3] };
 	auto b = zeros<float>(bdims);
-	average_pool(a, adims, pool_size, b, bdims);
+	//average_pool(a, adims, pool_size, b, bdims);
+	average_pool_parallel(a, b, adims, bdims, pool_size);
 
 	// conv layer
 	const int cdims[] = { bdims[0], (bdims[1] - conv2dims[0] + 1),
@@ -431,7 +479,8 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
 	const int ddims[] = { cdims[0], cdims[1] / pool_size, cdims[2] / pool_size,
 		cdims[3] };
 	auto d = zeros<float>(ddims);
-	average_pool(c, cdims, pool_size, d, ddims);
+	//average_pool(c, cdims, pool_size, d, ddims);
+	average_pool_parallel(c, d, cdims, ddims, pool_size);
 
 	// reshape
 	const int ddims2[] = { ddims[0], ddims[1] * ddims[2] * ddims[3] };
