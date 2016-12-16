@@ -561,7 +561,7 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   const int adims[] = {xdims[0], (xdims[1] - conv1dims[0] + 1),
                        (xdims[2] - conv1dims[1] + 1), conv1dims[3]};
   auto a = zeros<float>(adims);
-  auto y = zeros<float>(admis);
+  auto y = zeros<float>(adims);
   conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
   
   /// relu layer
@@ -575,19 +575,19 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   average_pool(a, adims, pool_size, b, bdims);
 
   const auto end1 = now();
-  const auto elapsed =
+  const auto elapsed1 =
       std::chrono::duration<double, std::milli>(end1 - start1).count();
-  std::cout << "elapsed = " << elapsed << " milliseconds" << "\n";
+  std::cout << "elapsed = " << elapsed1 << " milliseconds" << "\n";
 
   const auto start2 = now();
-  conv_forward_unroll(x, w, y, xdims, wdims, adims);
+  conv_forward_unroll(x, conv1, y, xdims, conv1dims, adims);
 
   const auto end2 = now();
-  const auto elapsed =
+  const auto elapsed2 =
       std::chrono::duration<double, std::milli>(end2 - start2).count();
-  std::cout << "elapsed = " << elapsed << " milliseconds" << "\n";
+  std::cout << "elapsed = " << elapsed2 << " milliseconds" << "\n";
   for(int i =0; i<65535; i++) {
-  	if(a[i] != y[i]) print("error %d",i);
+  	if(a[i] != y[i]) printf("error %d",i);
   }
 
 
