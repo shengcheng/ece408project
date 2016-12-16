@@ -23,8 +23,8 @@
 #define NUM_CHANNELS 1
 #define NUM_DIGITS 10
 
-#define TILE_WIDTH 2
-#define BLOCK_SIZE 64
+#define TILE_WIDTH 16
+#define MAX_THREADS	1024
 
 static int FLAGS_batch_size = 10000;
 static std::string FLAGS_testdata{};
@@ -201,14 +201,14 @@ void conv_forward_unroll(float *x, float *w, float *y, const int xdims[4], const
 	cudaMemcpy(device_x, x, size_x, cudaMemcpyHostToDevice);
 	cudaMemcpy(device_w_unroll, w_unroll, size_w_unroll, cudaMemcpyHostToDevice);
 
-	dim3 DimBlock_unroll_x(512, 1, 1);
-	dim3 DimGrid_unroll_x(ceil((float)(wdims[2] * ydims[1] * ydims[2]) / 512), 1, 1);
+	dim3 DimBlock_unroll_x(MAX_THREADS, 1, 1);
+	dim3 DimGrid_unroll_x(ceil((float)(wdims[2] * ydims[1] * ydims[2]) / MAX_THREADS), 1, 1);
 
 	dim3 DimBlock_matmul(TILE_WIDTH, TILE_WIDTH, 1);
 	dim3 DimGrid_matmul(ceil((float)(ydims[1] * ydims[2]) / TILE_WIDTH), ceil((float)(ydims[3]) / TILE_WIDTH), 1);
 
-	dim3 DimBlock_reroll_y(1024, 1, 1);
-	dim3 DimGrid_reroll_y(ceil((float)(ydims[1] * ydims[2] * ydims[3]) / 1024), 1, 1);
+	dim3 DimBlock_reroll_y(MAX_THREADS, 1, 1);
+	dim3 DimGrid_reroll_y(ceil((float)(ydims[1] * ydims[2] * ydims[3]) / MAX_THREADS), 1, 1);
 
 	for (int i = 0; i < xdims[0]; i++) {
 		unroll_x_kernel <<<DimGrid_unroll_x, DimBlock_unroll_x>>> (device_x + i * stripe_x, device_x_unroll, x_d, w_d, y_d);
