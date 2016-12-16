@@ -44,6 +44,7 @@ struct dims {
 	int dim[4];
 };
 
+/*
 __global__ void conv_forward_valid_kernel(float *X, float *W, float *Y, dims x, dims w, dims y, int W_grid) {
 	int filter_h = w.dim[0];
 	int filter_w = w.dim[1];
@@ -193,7 +194,7 @@ void fully_forward_parallel(float *x, float *w, float *y, const int xdims[2], co
 	cudaFree(device_w);
 	cudaFree(device_y);
 }
-
+*/
 __global__ void unroll_x_kernel(float *X, float *X_unrolled, dims x, dims w, dims y) {
 	int c, s, h_out, w_out, h_unroll, w_unroll, w_base, p, q, xoffset;
 	int t = blockDim.y * blockIdx.y + threadIdx.x;
@@ -535,12 +536,18 @@ static void fully_forward(const float *X, const int xdims[2], float *W,
 // + relu
 void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
                        float *fc2, int *out) {
+	const auto start = now();
   // conv layer
   const int adims[] = {xdims[0], (xdims[1] - conv1dims[0] + 1),
                        (xdims[2] - conv1dims[1] + 1), conv1dims[3]};
   auto a = zeros<float>(adims);
   conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
 
+  const auto end = now();
+  const auto elapsed =
+      std::chrono::duration<double, std::milli>(end - start).count();
+  std::cout << "elapsed = " << elapsed << " milliseconds" << "\n";
+  /*
   /// relu layer
   relu4(a, adims);
 
@@ -590,6 +597,7 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   delete[] d;
   delete[] e;
   delete[] f;
+  */
 }
 
 int main(int argc, char **argv) {
@@ -662,9 +670,9 @@ int main(int argc, char **argv) {
       num_correct++;
     }
   }
-  std::cout << "Done with " << FLAGS_batch_size << " queries in "
-           << "elapsed = " << elapsed << " milliseconds. Correctness: "
-           << static_cast<float>(num_correct) / FLAGS_batch_size << "\n";
+  // std::cout << "Done with " << FLAGS_batch_size << " queries in "
+  //          << "elapsed = " << elapsed << " milliseconds. Correctness: "
+  //          << static_cast<float>(num_correct) / FLAGS_batch_size << "\n";
 
   delete[] x;
   delete[] y;
