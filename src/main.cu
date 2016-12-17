@@ -198,6 +198,30 @@ void fully_forward_parallel(float *x, float *w, float *y, const int xdims[2], co
 }
 */
 
+void unroll_x_cpu(float *x, float *x_unroll_cpu, int xdims[4], int wdims[4], int ydims[4],int N) {
+	int c,h,w,p,q,w_base,w_unroll,h_unroll;
+	int C = xdims[3];
+	int H = xdims[1];
+	int W = xdims[2];
+	int K = wdims[0];
+	int h_out = ydims[1];
+	int y_out = ydims[2];
+	int W_unroll = h_out*w_out;
+	for(c=0;c<C;c++){
+		w_base = c*K*K;
+		for(p=0;p<K;p++){
+			for (q=0;q<K;q++){
+				for(h<0;h<h_out;h++){
+					for(w=0;w<w_out;w++){
+						w_unroll = w_base+p*K+q;
+						h_unroll = h*w_out+w;
+						x_unroll_cpu[h_unroll*W_unroll + w_unroll] = x[N,h_unroll,w_unroll,c];
+					}
+				}
+			}
+		}
+	}
+}
 
 __global__ void unroll_x_kernel(float *X, float *X_unroll, dims x, dims w, dims y) {
 	int c, s, h_out, w_out, h_unroll, w_unroll, w_base, p, q, xoffset;
@@ -344,6 +368,8 @@ void conv_forward_unroll(float *x, float *w, float *y, const int xdims[4], const
 	int stripe_x = xdims[1] * xdims[2] * xdims[3];
 	int stripe_y = ydims[1] * ydims[2] * ydims[3];
 
+	float *x_unroll_cpu = malloc(C*K*K*h_out*w_out*sizeof(float));
+
 	cudaMalloc((void **)&device_x, size_x);
 	cudaMalloc((void **)&device_y, size_y);
 	cudaMalloc((void **)&device_x_unroll, size_x_unroll);
@@ -368,6 +394,11 @@ void conv_forward_unroll(float *x, float *w, float *y, const int xdims[4], const
 	for (int i = 0; i < xdims[0]; i++) {
 		unroll_x_kernel <<<DimGrid_unroll_x, DimBlock_unroll_x>>> (device_x + i * stripe_x, device_x_unroll, x_d, w_d, y_d);
 		cudaDeviceSynchronize();
+		unroll_x_cpu(device_x + i * stripe_x, x_unroll_cpu, xdims, wdims, ydims, i);
+		for (int j = 0; j< 14400; j++) {
+			if(device_x_unroll[j] != x_unroll_cpu[j])
+				printf("error %d %d\n",i,j);
+		}
 		matrixMultiplyShared <<<DimGrid_matmul, DimBlock_matmul>>> (device_w_unroll, device_x_unroll, device_y_unroll,
 			numARows, numAColumns,
 			numBRows, numBColumns,
