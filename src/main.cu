@@ -198,14 +198,14 @@ void fully_forward_parallel(float *x, float *w, float *y, const int xdims[2], co
 }
 */
 
-void unroll_x_cpu(float *x, float *x_unroll_cpu, int xdims[4], int wdims[4], int ydims[4],int N) {
+void unroll_x_cpu(float *x, float *x_unroll_cpu,const int xdims[4],const int wdims[4],const int ydims[4],int N) {
 	int c,h,w,p,q,w_base,w_unroll,h_unroll;
 	int C = xdims[3];
 	int H = xdims[1];
 	int W = xdims[2];
 	int K = wdims[0];
 	int h_out = ydims[1];
-	int y_out = ydims[2];
+	int w_out = ydims[2];
 	int W_unroll = h_out*w_out;
 	for(c=0;c<C;c++){
 		w_base = c*K*K;
@@ -368,7 +368,8 @@ void conv_forward_unroll(float *x, float *w, float *y, const int xdims[4], const
 	int stripe_x = xdims[1] * xdims[2] * xdims[3];
 	int stripe_y = ydims[1] * ydims[2] * ydims[3];
 
-	float *x_unroll_cpu = malloc(C*K*K*h_out*w_out*sizeof(float));
+	float *x_unroll_cpu;
+	x_unroll_cpu  = (float*) malloc(xdims[3]*wdims[0]*wdims[1]*ydims[1]*ydims[2]*sizeof(float));
 
 	cudaMalloc((void **)&device_x, size_x);
 	cudaMalloc((void **)&device_y, size_y);
