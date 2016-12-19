@@ -66,10 +66,6 @@ Test your implementation with small batch size frist to verify the correctness. 
 ~~~
 
 
-## Utility Functions
-
-We provide a some helper utility functions in the [`utils.hpp`][utilshpp] file.
-
 ### How to Time
 
 In [`utils.hpp`][utilshpp] a function called `now()` which allows you to get the current time at a high resolution. To measure the overhead of a function `f(args...)`, the pattern to use is:
