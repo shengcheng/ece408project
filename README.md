@@ -3,9 +3,13 @@ The final time is about 900ms.
 
 # Implementation 
 Unroll the input
+
 Matrix Multiplication
+
 Reunroll the output
+
 Average Pool
+
 Fully Connected
 
 
