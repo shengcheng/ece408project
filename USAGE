@@ -1,0 +1,27 @@
+To use the program, an operating system supported for cuda is required as well  as the C complier, CUDA 8.0 Toolkit and Cmake.
+
+We made a little change in CmakeList file to support additional cuda library and faster complier.
+
+For faster complier:
+
+list(APPEND CUDA_NVCC_FLAGS -O3)
+list(APPEND CUDA_NVCC_FLAGS -use_fast_math)
+
+For additional library:
+
+${CUDA_CUBLAS_LIBRARIES}
+
+For local development:
+
+$ make
+
+$ ./ece408 <path of input data> <path to data needed to check> < batch size>
+
+To perform the nvprof, add to rai-build.yml:
+
+- >-
+  nvprof --cpu-profiling on --export-profile timeline.nvprof --
+  ./ece408 /src/data/test10.hdf5 /src/data/model.hdf5 10
+- >-
+  nvprof --cpu-profiling on --export-profile analysis.nvprof --analysis-metrics --
+  ./ece408 /src/data/test10.hdf5 /src/data/model.hdf5 10
