@@ -1,6 +1,4 @@
-# ECE 408 Project
 
-The goal of this project is to accelerate the forward propagation step of the Convolutional Neural Network (CNN) algorithm using GPUs. The sequential implementation provided follows the basic algorithm 16.4 and 16.5 decribed in [book chapter 16](https://wiki.illinois.edu/wiki/display/ece408f16/Book+Chapters?preview=/602518692/603851747/3rd-Edition-Chapter16-case-study-DNN-FINAL.pdf). The dataset and model are from the [MNIST database](http://yann.lecun.com/exdb/mnist/).
 
 ## CNN and MNIST
 
@@ -10,9 +8,6 @@ Provided is a model that has been trained using 60,000 examples (training set im
 
 The data and model are in [HDF5](https://support.hdfgroup.org/HDF5/) format and we have provided the code to read the input model and the training dataset.
 
-## CUDA Implementation
-
-Book chapters 16.3 and 16.4 provide a basic CUDA implementation of forward propagation of convolutional layer and possible optimization. Your CUDA implementation would be evaluated based on performance and accuracy. Apply any optimization you think would bring benefit and feel free to modify any part of the code. You should not use `cuBLAS` or `cuDNN` for the implementation, but you are expected to compare your implementation with those libraries --- profiling the code as well as comparing the algorithms used (if algorithm information is publically available).
 
 ## System Requirements
 
@@ -47,30 +42,7 @@ If you do not plan on using `make`, examine the `cmake -G` option which allows y
 
 If you need to use another library, you need have to modify the [`CMakeLists.txt`](https://github.com/webgpu/ece408project/blob/master/CMakeLists.txt) and add the libraries to the `target_link_libraries` (and possibly the `include_directories`) section. Documentation on the CMake commands is found in the [documentation page][cmakedoc].
 
-### Using Docker Container
 
-[![Docker Automated build](https://img.shields.io/docker/automated/jrottenberg/ffmpeg.svg)](https://hub.docker.com/r/webgpu/ece408project/)
-
-Also included is a [Docker](http://docker.io/) build file. This file is a specification for a Docker container image. It can be used to build and launch a container (think of a virtual machine) which contains this project along with all the software required to run it. Using a GPU within Docker is only supported on Linux(you can compile and run the serial code on any operating system), and we recommend using [NVIDIA-Docker](https://github.com/NVIDIA/nvidia-docker) to run the Docker image. To build the Docker container, do
-
-~~~{.sh}
-cd $SRCDIR
-docker build . -t ece408project
-~~~
-
-Once built, the `ece408project` image would be listed by the `docker images` command. This will compile your project. You can launch the docker image using
-
-~~~{.sh}
-docker run -it ece408project
-~~~
-
-## Running the Serial Code
-
-~~~{.sh}
-./ece408 ../data/test10.hdf5 ../data/model.hdf5 batch_size
-~~~
-
-the `batch_size` must match the size of the dataset. If `batch_size` is unspecified, the default value is dependent on the input (10 for "../data/test10.hdf5", ..., 10000 for "../data/testfull.hdf5"), which is also the size of `data.hdf5`.
 
 ## How to Test
 
@@ -149,14 +121,3 @@ bool check_success<cudaError_t>(const cudaError_t &err) {
 check_success(cudaFree(deviceData));
 ~~~
 
-## Reporting Issues
-
-Please use the [Github issue manager] to report any issues or suggestions about the project.
-
-
-[utilshpp]: https://github.com/webgpu/ece408project/blob/master/src/utils.hpp
-[cmakedoc]: https://cmake.org/cmake/help/latest/
-[hunterdoc]: https://docs.hunter.sh/en/latest/
-[rangehpp]: https://github.com/harrism/cpp11-range
-[Github issue manager]: https://github.com/webgpu/ece408project/issues
-[Hunter]: https://github.com/ruslo/hunter
