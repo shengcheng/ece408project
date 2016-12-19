@@ -75,8 +75,11 @@ set(CUDA_PROPAGATE_HOST_FLAGS TRUE)
 # with 'set' and change the value of COMPUTE_CAPABILITY to one of the following
 # hardware architectures: Tesla-class '11', '12', or '13'; Fermi-class '20'
 # or '21'; Kepler-class '30', '32', '35'; or Maxwell-class '50' or '52'
-CUDA_SELECT_NVCC_ARCH_FLAGS(ARCH_FLAGS 3.0 3.5+PTX 5.0 Maxwell 6.1)
+CUDA_SELECT_NVCC_ARCH_FLAGS(ARCH_FLAGS "Auto")
 list(APPEND CUDA_NVCC_FLAGS ${ARCH_FLAGS})
+
+list(APPEND CUDA_NVCC_FLAGS -use_fast_math)
+list(APPEND CUDA_NVCC_FLAGS -O3)
 
 # Set warning levels for host compilation
 if (UNIX)
@@ -108,6 +111,7 @@ cuda_add_executable(${PROJECT_TARGET} ${SOURCES})
 target_link_libraries(${PROJECT_TARGET}
     ${HDF5_LIBRARIES}
     ${ZLIB_LIBRARIES}
+    ${CUDA_CUBLAS_LIBRARIES}
 )
 
 # Add a special target to clean nvcc generated files.
